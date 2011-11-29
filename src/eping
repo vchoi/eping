@@ -1,0 +1,252 @@
+#! /usr/bin/env python
+
+import sys, re, os
+import argparse
+import time
+import smtplib
+import imaplib
+import email
+from multiprocessing import Process, Lock, Queue
+
+class Eping:
+	def __init__(self):
+		self.program = 'eping'
+		self.version = '0.1'
+		self.description = 'Email Ping Tool'
+
+		self.args = self.parse_commandline()
+
+		# These objects are only created if we pass the cmdline validation
+		self.__shutdown = False
+		self.__log_lock = Lock()
+		self.smtp_queue = Queue()
+		self.imap_queue = Queue()
+		self.parent_queue = Queue()
+
+	def parse_commandline(self):
+		parser = argparse.ArgumentParser()
+
+		parser.description = self.description
+		parser.prog = self.program
+
+		parser.add_argument('-U', '--user',
+			required = True,
+			type = str,
+			action = 'store',
+			dest = 'username')
+
+		parser.add_argument('-P', '--pass',
+			required = True,
+			type = str,
+			action = 'store',
+			dest = 'password')
+
+		parser.add_argument('-i', '--imaps_server',
+			required = True,
+			type = str,
+			action = 'store',
+			dest = 'imaps_server')
+
+		parser.add_argument('-s', '--smtp_server',
+			required = True,
+			type = str,
+			action = 'store',
+			dest = 'smtp_server')
+
+		parser.add_argument('-t', '--to',
+			required = False,
+			type = str,
+			action = 'append',
+			dest = 'to')
+
+		parser.add_argument('--imaps_port',
+			required = False,
+			type = int,
+			action = 'store',
+			default = 993,
+			dest = 'imaps_port')
+
+		parser.add_argument('--smtp_port',
+			required = False,
+			type = int,
+			action = 'store',
+			default = 587,
+			dest = 'smtp_port')
+
+		parser.add_argument('--send_interval',
+			required = False,
+			type = int,
+			action = 'store',
+			default = 60,
+			dest = 'send_interval')
+
+		parser.add_argument('--verbose',
+			required = False,
+			action = 'store_true',
+			default = False,
+			dest = 'verbose')
+
+		parser.add_argument('--debug',
+			required = False,
+			action = 'store_true',
+			default = False,
+			dest = 'debug')
+
+		parser.add_argument('--version',
+			action='version',
+			version='%s %s' % (self.program, self.version))
+
+		return parser.parse_args()
+
+	def log(self, m):
+		if self.args.verbose:
+			self.__log_lock.acquire()
+			print "%s(%i): %s" % (self.program, os.getpid(), m) 	
+			self.__log_lock.release()
+
+	def imap_client(self):
+		self.program='eping-imap_client'
+		self.log("started")
+
+		try:
+			connection = imaplib.IMAP4_SSL(self.args.imaps_server, self.args.imaps_port)
+			if self.args.debug:
+				connection.debug=1
+			connection.login(self.args.username, self.args.password)
+			self.log("client connected and authenticated")
+		except Exception as e:
+			self.log(str(e))
+			self.kill_parent()
+			sys.exit()
+		except KeyboardInterrupt:
+			self.__shutdown = True
+
+		while not self.__shutdown:
+			try:
+				time.sleep(1)
+			except KeyboardInterrupt:
+				self.__shutdown = True
+
+		self.log("ended")
+
+	def smtp_client(self):
+		self.program='eping-smtp_client'
+		self.log("started")
+
+		try:
+			connection = smtplib.SMTP()
+			if self.args.debug:
+				connection.set_debuglevel(1)
+			connection.connect(self.args.smtp_server, self.args.smtp_port)
+			connection.starttls()
+			connection.login(self.args.username, self.args.password)
+			self.log("client connected and authenticated")
+		except Exception as e:
+			self.log(str(e))
+			self.kill_parent()
+			sys.exit()
+		except KeyboardInterrupt:
+			self.__shutdown = True
+
+		while not self.__shutdown:
+			try:
+				time.sleep(1)
+			except KeyboardInterrupt:
+				self.__shutdown = True
+
+		self.log('ended')
+
+	def spawn_smtp_client(self):
+		if self.__shutdown:
+			return
+		self.log('spawning smtp_process')
+		self.smtp_process = Process(target=self.smtp_client)
+		self.smtp_process.daemon = True
+		self.smtp_process.start()
+
+	def spawn_imap_client(self):
+		if self.__shutdown:
+			return
+		self.log('spawning imap_process')
+		self.imap_process = Process(target=self.imap_client)
+		self.imap_process.daemon = True
+		self.imap_process.start()
+
+	def consume_parent_queue(self):
+		if self.parent_queue.empty():
+			return
+		cmd = self.parent_queue.get()
+		if cmd == 'DIE':
+			self.log('DIE received')
+			self.__shutdown = True
+
+	def consume_imap_queue(self):
+		if self.imap_queue.empty():
+			return
+		cmd = self.imap_queue.get()
+		if cmd == 'DIE':
+			self.log('DIE received')
+			self.__shutdown = True
+
+	def consume_smtp_queue(self):
+		if self.smtp_queue.empty():
+			return
+		cmd = self.smtp_queue.get()
+		if cmd == 'DIE':
+			self.log('DIE received')
+			self.__shutdown = True
+		else:
+			self.log(cmd)
+
+	def kill_parent(self):
+		self.log('kill_parent()')
+		m = 'DIE'
+		self.parent_queue.put(m)
+
+	def kill_imap(self):
+		self.log('kill_imap()')
+		m = 'DIE'
+		self.imap_queue.put(m)
+
+	def kill_smtp(self):
+		self.log('kill_smtp()')
+		m = 'DIE'
+		self.smtp_queue.put(m)
+
+	def nice_shutdown_process(self, process, queue):
+		m = 'DIE'
+		queue.put(m)
+		process.join(5)
+		if process.is_alive():
+			self.log('terminating %s' % process.name)
+
+	def main(self):
+		self.program = 'eping-main'
+		self.log('%s %s starting' % (self.program, self.version))
+		self.log(self.args)
+
+		self.spawn_smtp_client()
+		self.spawn_imap_client()
+
+		while not self.__shutdown:
+			try:
+				self.consume_parent_queue()
+				if not self.smtp_process.is_alive():
+					self.spawn_smtp_client()
+				if not self.imap_process.is_alive():
+					self.spawn_imap_client()
+				time.sleep(1)
+			except KeyboardInterrupt:
+				self.__shutdown = True
+
+		self.log('shutting down')
+		self.nice_shutdown_process(self.smtp_process, self.smtp_queue)
+		self.nice_shutdown_process(self.imap_process, self.imap_queue)
+
+		self.log('exiting')
+
+
+if __name__ == "__main__":
+	eping = Eping()
+	eping.main()
+
