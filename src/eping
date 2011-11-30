@@ -5,13 +5,15 @@ import argparse
 import time
 import smtplib
 import imaplib
-import email
+from email.message import Message
+from email.parser import FeedParser
 from multiprocessing import Process, Lock, Queue
 
 class Eping:
 	def __init__(self):
 		self.program = 'eping'
 		self.version = '0.1'
+		self.user_agent = '%s-%s' % (self.program, self.version)
 		self.description = 'Email Ping Tool'
 
 		self.args = self.parse_commandline()
@@ -53,11 +55,17 @@ class Eping:
 			action = 'store',
 			dest = 'smtp_server')
 
+		parser.add_argument('-f', '--from',
+			required = True,
+			type = str,
+			action = 'store',
+			dest = 'mail_from')
+
 		parser.add_argument('-t', '--to',
 			required = False,
 			type = str,
 			action = 'append',
-			dest = 'to')
+			dest = 'rcpt_to')
 
 		parser.add_argument('--imaps_port',
 			required = False,
@@ -104,8 +112,119 @@ class Eping:
 			print "%s(%i): %s" % (self.program, os.getpid(), m) 	
 			self.__log_lock.release()
 
+	def make_echo_request(self):
+		t0 = time.gmtime()
+		t0_str = time.asctime(t0) + ' +0000'
+		t0_int = time.mktime(t0)
+
+		msg = Message()
+
+		#msg.set_unixfrom(self.args.mail_from)
+		msg.set_charset('utf-8')
+		msg.add_header('User-agent', self.user_agent)
+		msg.add_header('From', self.args.mail_from)
+		for email_addr in self.args.rcpt_to:
+			msg.add_header('To', email_addr)
+		msg.add_header('eping-type', 'echo-request')
+		msg.add_header('eping-t0', '%i' % t0_int)
+		msg.add_header('Subject', 'echo-request %s' % t0_str)
+
+		return msg
+
+	def make_echo_reply(self, msg_request):
+		t1 = time.gmtime()
+		t1_str = time.asctime(t1) + ' +0000'
+		t1_int = int(time.mktime(t1))
+
+		t0_int = int(msg_request.get('eping-t0'))
+		ping_time = t1_int - t0_int
+		
+		received_path = msg_request.get_all('Received')
+		subject = 'Re: ' + msg_request.get('Subject')
+		reply_to = msg_request.get('From')
+		
+
+		msg = Message()
+		msg.set_charset('utf-8')
+		msg.add_header('User-agent', self.user_agent)
+		msg.add_header('From', self.args.mail_from)
+		msg.add_header('To', reply_to)
+		msg.add_header('Subject', subject)
+		msg.add_header('eping-type', 'echo-reply')
+		msg.add_header('eping-t0', '%i' % t0_int)
+		msg.add_header('eping-t1', '%i' % t1_int)
+		msg.add_header('eping-ping-time', '%i' % ping_time)
+		msg.add_header('eping-ping-hops', '%i'% len(received_path))
+
+		return msg
+
+	def consume_echo_reply(self, msg):
+		t2 = time.gmtime()
+		t2_str = time.asctime(t2) + ' +0000'
+		t2_int = int(time.mktime(t2))
+
+		t0_int = int(msg.get('eping-t0'))
+		t1_int = int(msg.get('eping-t1'))
+
+		rtt = t2_int - t0_int
+
+		ping_time = int(msg.get('eping-ping-time'))
+		pong_time = t2_int - t1_int
+		pingpong = abs(ping_time) + abs(pong_time)
+
+		pingpong_rtt = pingpong - rtt
+
+		ping_hops = int(msg.get('eping-ping-hops'))
+
+		received_path = msg.get_all('Received')
+		pong_hops = len(received_path)
+
+		rcvd_from = msg.get('From')
+
+		results = (
+			('GMT Time', t2_int),
+			('From', rcvd_from),
+			('Round Trip Time', rtt),
+			('Ping Time', ping_time),
+			('Pong Time', pong_time),
+			('PingPong Time', pingpong),
+			('PingPong - RTT', pingpong_rtt),
+			('Ping Hops', ping_hops),
+			('Pong Hops', pong_hops),
+			('Round Trip Hops', ping_hops + pong_hops)
+		)
+
+		print results
+		
+
+	def imap_answerer(self, connection, msglist):
+		for msgnum in msglist:
+			typ, data = connection.fetch(msgnum, '(RFC822)')
+			msgstr = data[0][1]
+			parser = FeedParser()
+			parser.feed(msgstr)
+			msg = parser.close()
+
+			# process only our own messages
+			user_agent = msg.get('User-agent')
+			if user_agent != self.user_agent:
+				continue
+
+			eping_type = msg.get('eping-type')
+			if eping_type == 'echo-request':
+				msg_reply = self.make_echo_reply(msg)
+				self.smtp_queue.put(msg_reply)
+				connection.store(msgnum, '+FLAGS', 
+					'\\Answered \\Seen')
+				continue
+			elif eping_type == 'echo-reply':
+				self.consume_echo_reply(msg)
+				connection.store(msgnum, '+FLAGS',
+					'\\Answered \\Seen')
+				continue
+
 	def imap_client(self):
-		self.program='eping-imap_client'
+		self.program='eping-imap'
 		self.log("started")
 
 		try:
@@ -113,8 +232,9 @@ class Eping:
 			if self.args.debug:
 				connection.debug=1
 			connection.login(self.args.username, self.args.password)
-			self.log("client connected and authenticated")
-		except Exception as e:
+			connection.select()
+			self.log("connected to inbox")
+		except imaplib.error as e:
 			self.log(str(e))
 			self.kill_parent()
 			sys.exit()
@@ -123,15 +243,28 @@ class Eping:
 
 		while not self.__shutdown:
 			try:
+				typ, data = connection.search(None, 
+					'(NOT DELETED NOT ANSWERED SUBJECT echo-)')
+				if len(data[0]) > 0:
+					self.imap_answerer(connection, 
+						data[0].split())
+
 				time.sleep(1)
 			except KeyboardInterrupt:
-				self.__shutdown = True
+				break
+			except Exception as e:
+				self.log(str(e))
+				continue
 
 		self.log("ended")
 
 	def smtp_client(self):
-		self.program='eping-smtp_client'
+		self.program = 'eping-smtp'
 		self.log("started")
+
+		if self.smtp_queue.empty():
+			self.log('empty work queue, exitting')
+			return
 
 		try:
 			connection = smtplib.SMTP()
@@ -140,33 +273,63 @@ class Eping:
 			connection.connect(self.args.smtp_server, self.args.smtp_port)
 			connection.starttls()
 			connection.login(self.args.username, self.args.password)
-			self.log("client connected and authenticated")
 		except Exception as e:
 			self.log(str(e))
 			self.kill_parent()
 			sys.exit()
-		except KeyboardInterrupt:
-			self.__shutdown = True
 
-		while not self.__shutdown:
+		msgcounter = 0
+
+		while not self.smtp_queue.empty():
 			try:
-				time.sleep(1)
-			except KeyboardInterrupt:
-				self.__shutdown = True
+				m = self.smtp_queue.get(True,1)
+				mailfrom = m.get('From')
+				rcptto = m.get_all('To')
+				subject = m.get('Subject')
+				# will raise exceptions if empty
+				len(mailfrom)
+				len(rcptto)
+				len(subject)
+				connection.sendmail(mailfrom, rcptto, 
+					m.as_string())
+				self.log('sent %i: %s' % (msgcounter, subject))
+				msgcounter += 1
+			except Exception as e:
+				self.log('%s' % e)
+				continue
 
-		self.log('ended')
+		connection.quit()
+		self.log('sent %i messages. ending.' % msgcounter)
 
 	def spawn_smtp_client(self):
+		# dont spawn children if main process is shutting down
 		if self.__shutdown:
 			return
+
+		# dont spawn more than one smtp process
+		try:
+			if self.smtp_process.is_alive():
+				return
+		except AttributeError:
+			pass
+
 		self.log('spawning smtp_process')
 		self.smtp_process = Process(target=self.smtp_client)
 		self.smtp_process.daemon = True
 		self.smtp_process.start()
 
 	def spawn_imap_client(self):
+		# dont spawn children if main process is shutting down
 		if self.__shutdown:
 			return
+
+		# dont spawn more than one imap process
+		try:
+			if self.imap_process.is_alive():
+				return
+		except AttributeError:
+			pass
+
 		self.log('spawning imap_process')
 		self.imap_process = Process(target=self.imap_client)
 		self.imap_process.daemon = True
@@ -225,19 +388,29 @@ class Eping:
 		self.log('%s %s starting' % (self.program, self.version))
 		self.log(self.args)
 
-		self.spawn_smtp_client()
-		self.spawn_imap_client()
+		last_sent_echo = 0
 
 		while not self.__shutdown:
+			now = time.time()
+			self.consume_parent_queue()
+
+			# queue echo-requests at regular intervals
+			if (now - last_sent_echo) > self.args.send_interval:
+				last_sent_echo = now
+				msg = self.make_echo_request()
+				self.smtp_queue.put(msg)
+
+			# spawn smtp client when needed
+			if not self.smtp_queue.empty():
+				self.spawn_smtp_client()
+
+			# (re)spawn imap client
+			self.spawn_imap_client()
+
 			try:
-				self.consume_parent_queue()
-				if not self.smtp_process.is_alive():
-					self.spawn_smtp_client()
-				if not self.imap_process.is_alive():
-					self.spawn_imap_client()
 				time.sleep(1)
 			except KeyboardInterrupt:
-				self.__shutdown = True
+				break
 
 		self.log('shutting down')
 		self.nice_shutdown_process(self.smtp_process, self.smtp_queue)
