@@ -242,7 +242,7 @@ class Eping:
 		try:
 			connection = imaplib.IMAP4_SSL(self.args.imaps_server, self.args.imaps_port)
 			if self.args.debug:
-				connection.debug=1
+				connection.debug=3
 			connection.login(self.args.username, self.args.password)
 			connection.select()
 			self.log("connected to inbox")
