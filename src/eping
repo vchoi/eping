@@ -100,6 +100,18 @@ class Eping:
 			default = False,
 			dest = 'debug')
 
+		parser.add_argument('--debug_imap',
+			required = False,
+			action = 'store_true',
+			default = False,
+			dest = 'debug_imap')
+
+		parser.add_argument('--debug_smtp',
+			required = False,
+			action = 'store_true',
+			default = False,
+			dest = 'debug_smtp')
+
 		parser.add_argument('--debug_messages',
 			required = False,
 			action = 'store_true',
@@ -240,7 +252,7 @@ class Eping:
 
 		try:
 			connection = imaplib.IMAP4_SSL(self.args.imaps_server, self.args.imaps_port)
-			if self.args.debug:
+			if self.args.debug_imap:
 				connection.debug=3
 			connection.login(self.args.username, self.args.password)
 			connection.select()
@@ -279,7 +291,7 @@ class Eping:
 
 		try:
 			connection = smtplib.SMTP()
-			if self.args.debug:
+			if self.args.debug_smtp:
 				connection.set_debuglevel(1)
 			connection.connect(self.args.smtp_server, self.args.smtp_port)
 			connection.starttls()
