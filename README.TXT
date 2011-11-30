@@ -1,4 +1,4 @@
-eping: Email ping (echo) server and client
+eping: Email ping tool
 Author: Vitor Choi Feitosa <vchoi@vchoi.org>
 License: Creative Commons Attribution-ShareAlike 3.0 Unported License
 
