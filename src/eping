@@ -406,7 +406,8 @@ class Eping:
 			self.consume_parent_queue()
 
 			# queue echo-requests at regular intervals
-			if (now - last_sent_echo) > self.args.send_interval:
+			if ( (self.args.rcpt_to != None) &
+				((now - last_sent_echo) > self.args.send_interval) ):
 				last_sent_echo = now
 				msg = self.make_echo_request()
 				self.smtp_queue.put(msg)
