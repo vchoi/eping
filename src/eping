@@ -251,7 +251,8 @@ class Eping:
 		self.log("started")
 
 		try:
-			connection = imaplib.IMAP4_SSL(self.args.imaps_server, self.args.imaps_port)
+			connection = imaplib.IMAP4_SSL(self.args.imaps_server,
+				self.args.imaps_port)
 			if self.args.debug_imap:
 				connection.debug=3
 			connection.login(self.args.username, self.args.password)
@@ -266,6 +267,7 @@ class Eping:
 
 		while not self.__shutdown:
 			try:
+				connection.noop()
 				typ, data = connection.search(None, 
 					'(NOT DELETED NOT ANSWERED SUBJECT echo-)')
 				if len(data[0]) > 0:
