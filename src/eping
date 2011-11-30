@@ -100,6 +100,13 @@ class Eping:
 			default = False,
 			dest = 'debug')
 
+		parser.add_argument('--debug_messages',
+			required = False,
+			action = 'store_true',
+			default = False,
+			dest = 'debug_messages')
+
+
 		parser.add_argument('--version',
 			action='version',
 			version='%s %s' % (self.program, self.version))
@@ -198,6 +205,11 @@ class Eping:
 		
 
 	def imap_answerer(self, connection, msglist):
+
+		processed_message_flags = '\\Deleted \\Answered \\Seen'
+		if self.args.debug_messages:
+			processed_message_flags = '\\Answered \\Seen'
+
 		for msgnum in msglist:
 			typ, data = connection.fetch(msgnum, '(RFC822)')
 			msgstr = data[0][1]
@@ -215,12 +227,12 @@ class Eping:
 				msg_reply = self.make_echo_reply(msg)
 				self.smtp_queue.put(msg_reply)
 				connection.store(msgnum, '+FLAGS', 
-					'\\Answered \\Seen')
+					processed_message_flags)
 				continue
 			elif eping_type == 'echo-reply':
 				self.consume_echo_reply(msg)
 				connection.store(msgnum, '+FLAGS',
-					'\\Answered \\Seen')
+					processed_message_flags)
 				continue
 
 	def imap_client(self):
