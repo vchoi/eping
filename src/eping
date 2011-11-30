@@ -241,7 +241,7 @@ class Eping:
 		try:
 			connection = imaplib.IMAP4_SSL(self.args.imaps_server, self.args.imaps_port)
 			if self.args.debug:
-				connection.debug=1
+				connection.debug=3
 			connection.login(self.args.username, self.args.password)
 			connection.select()
 			self.log("connected to inbox")
@@ -423,10 +423,6 @@ class Eping:
 				time.sleep(1)
 			except KeyboardInterrupt:
 				break
-
-		self.log('shutting down')
-		self.nice_shutdown_process(self.smtp_process, self.smtp_queue)
-		self.nice_shutdown_process(self.imap_process, self.imap_queue)
 
 		self.log('exiting')
 
