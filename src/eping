@@ -424,10 +424,6 @@ class Eping:
 			except KeyboardInterrupt:
 				break
 
-		self.log('shutting down')
-		self.nice_shutdown_process(self.smtp_process, self.smtp_queue)
-		self.nice_shutdown_process(self.imap_process, self.imap_queue)
-
 		self.log('exiting')
 
 
