@@ -3,6 +3,7 @@
 import sys, re, os
 import argparse
 import time
+import base64
 import smtplib
 import imaplib
 from email.message import Message
@@ -12,6 +13,7 @@ from multiprocessing import Process, Lock, Queue
 class Eping:
 	def __init__(self):
 		self.program = 'eping'
+		self.protocol_version = 1
 		self.version = '0.1'
 		self.user_agent = '%s-%s' % (self.program, self.version)
 		self.description = 'Email Ping Tool'
@@ -137,14 +139,15 @@ class Eping:
 
 		msg = Message()
 
-		#msg.set_unixfrom(self.args.mail_from)
 		msg.set_charset('utf-8')
+		msg.set_type('text/plain')
 		msg.add_header('User-agent', self.user_agent)
 		msg.add_header('From', self.args.mail_from)
 		for email_addr in self.args.rcpt_to:
 			msg.add_header('To', email_addr)
-		msg.add_header('eping-type', 'echo-request')
-		msg.add_header('eping-t0', '%i' % t0_int)
+		msg.add_header('X-eping-protocol-version', str(self.protocol_version))
+		msg.add_header('X-eping-type', 'echo-request')
+		msg.add_header('X-eping-t0', '%i' % t0_int)
 		msg.add_header('Subject', 'echo-request %s' % t0_str)
 
 		return msg
@@ -154,25 +157,41 @@ class Eping:
 		t1_str = time.asctime(t1) + ' +0000'
 		t1_int = int(time.mktime(t1))
 
-		t0_int = int(msg_request.get('eping-t0'))
+		try:
+			t0_int = int(msg_request.get('X-eping-t0'))
+		except TypeError as e:
+			self.log('make_echo_reply(): missing header X-eping-t0')
+			raise e
 		ping_time = t1_int - t0_int
 		
-		received_path = msg_request.get_all('Received')
+		ping_path = msg_request.get_all('Received')
 		subject = 'Re: ' + msg_request.get('Subject')
 		reply_to = msg_request.get('From')
-		
+
+		message_id = msg_request.get('Message-Id')
 
 		msg = Message()
 		msg.set_charset('utf-8')
+		msg.set_type('text/plain')
 		msg.add_header('User-agent', self.user_agent)
 		msg.add_header('From', self.args.mail_from)
 		msg.add_header('To', reply_to)
 		msg.add_header('Subject', subject)
-		msg.add_header('eping-type', 'echo-reply')
-		msg.add_header('eping-t0', '%i' % t0_int)
-		msg.add_header('eping-t1', '%i' % t1_int)
-		msg.add_header('eping-ping-time', '%i' % ping_time)
-		msg.add_header('eping-ping-hops', '%i'% len(received_path))
+		if type(message_id) != type(None):
+			msg.add_header('In-Reply-To', message_id)
+		msg.add_header('X-eping-protocol-version', str(self.protocol_version))
+		msg.add_header('X-eping-type', 'echo-reply')
+		msg.add_header('X-eping-t0', '%i' % t0_int)
+		msg.add_header('X-eping-t1', '%i' % t1_int)
+		msg.add_header('X-eping-ping-time', '%i' % ping_time)
+		msg.add_header('X-eping-ping-hops', '%i'% len(ping_path))
+
+		payload = ''
+		payload += '---- echo-request headers ----\n'
+		for h in msg_request._headers:
+			payload += '%s: %s\n' % h
+
+		msg.set_payload(base64.encodestring(payload))
 
 		return msg
 
@@ -181,18 +200,18 @@ class Eping:
 		t2_str = time.asctime(t2) + ' +0000'
 		t2_int = int(time.mktime(t2))
 
-		t0_int = int(msg.get('eping-t0'))
-		t1_int = int(msg.get('eping-t1'))
+		t0_int = int(msg.get('X-eping-t0'))
+		t1_int = int(msg.get('X-eping-t1'))
 
 		rtt = t2_int - t0_int
 
-		ping_time = int(msg.get('eping-ping-time'))
+		ping_time = int(msg.get('X-eping-ping-time'))
 		pong_time = t2_int - t1_int
 		pingpong = abs(ping_time) + abs(pong_time)
 
 		pingpong_rtt = pingpong - rtt
 
-		ping_hops = int(msg.get('eping-ping-hops'))
+		ping_hops = int(msg.get('X-eping-ping-hops'))
 
 		received_path = msg.get_all('Received')
 		pong_hops = len(received_path)
@@ -200,8 +219,8 @@ class Eping:
 		rcvd_from = msg.get('From')
 
 		results = (
-			('GMT Time', t2_int),
 			('From', rcvd_from),
+			('GMT Time', t0_int),
 			('Round Trip Time', rtt),
 			('Ping Time', ping_time),
 			('Pong Time', pong_time),
@@ -229,11 +248,14 @@ class Eping:
 			msg = parser.close()
 
 			# process only our own messages
-			user_agent = msg.get('User-agent')
-			if user_agent != self.user_agent:
+			try:
+				protocol_version = int(msg.get('X-eping-protocol-version'))
+			except TypeError: 
+				continue
+			if protocol_version != self.protocol_version:
 				continue
 
-			eping_type = msg.get('eping-type')
+			eping_type = msg.get('X-eping-type')
 			if eping_type == 'echo-request':
 				msg_reply = self.make_echo_reply(msg)
 				self.smtp_queue.put(msg_reply)
@@ -245,6 +267,9 @@ class Eping:
 				connection.store(msgnum, '+FLAGS',
 					processed_message_flags)
 				continue
+			else:
+				self.log('unknown X-eping-type: %s' % eping_type)
+				continue
 
 	def imap_client(self):
 		self.program='eping-imap'
@@ -254,7 +279,7 @@ class Eping:
 			connection = imaplib.IMAP4_SSL(self.args.imaps_server,
 				self.args.imaps_port)
 			if self.args.debug_imap:
-				connection.debug=3
+				connection.debug=10
 			connection.login(self.args.username, self.args.password)
 			connection.select()
 			self.log("connected to inbox")
