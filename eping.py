@@ -1,11 +1,8 @@
 #! /usr/bin/env python
 
-import sys, re, os
-import time
-from optparse import OptionParser
-import base64
-import smtplib
-import imaplib
+import sys, re, os, time, math, types
+import smtplib, imaplib, base64
+from optparse import OptionParser, OptionGroup
 from email.message import Message
 from email.parser import FeedParser
 from multiprocessing import Process, Lock, Queue
@@ -25,6 +22,7 @@ class Eping:
 		self.__log_lock = Lock()
 		self.smtp_queue = Queue()
 		self.imap_queue = Queue()
+		self.nsca_queue= Queue()
 		self.parent_queue = Queue()
 
 	def parse_commandline(self):
@@ -38,92 +36,165 @@ class Eping:
 			'mail_from',
 			)
 
-		parser.add_option('-U', '--user',
-			type = 'string',
-			action = 'store',
-			dest = 'username',
-			help = 'Email account username.')
+		require_or = (
+			
+			)
 
-		parser.add_option('-P', '--pass',
-			type = 'string',
-			action = 'store',
-			dest = 'password',
-			help = 'Email account password.')
+		require_xor = (
 
-		parser.add_option('-i', '--imaps_server',
-			type = 'string',
-			action = 'store',
-			dest = 'imaps_server',
-			help = 'IMAP over SSL server.')
+		)
 
-		parser.add_option('-s', '--smtp_server',
-			type = 'string',
-			action = 'store',
-			dest = 'smtp_server',
-			help = 'SMTP Server (must support STARTTLS).')
+		require_and = (
 
-		parser.add_option('-f', '--from',
-			type = 'string',
-			action = 'store',
-			dest = 'mail_from',
-			help = 'Sender address')
+		)
 
-		parser.add_option('-t', '--to',
-			type = 'string',
-			action = 'append',
-			dest = 'rcpt_to',
-			help = 'Where to send the email echo-requests.')
-
-		parser.add_option('--imaps_port',
-			type = 'int',
-			action = 'store',
-			default = 993,
-			dest = 'imaps_port',
-			help = 'IMAP/S port. [default=%default]')
-
-		parser.add_option('--smtp_port',
-			type = 'int',
-			action = 'store',
-			default = 587,
-			dest = 'smtp_port',
-			help = 'SMTP port. [default=%default]')
-
-		parser.add_option('--send_interval',
-			type = 'int',
-			action = 'store',
-			default = 60,
-			dest = 'send_interval',
-			help = 'Interval between echo-requests. [default=%default]')
-
+		# general options
 		parser.add_option('--verbose',
 			action = 'store_true',
 			default = False,
 			dest = 'verbose')
 
-		parser.add_option('--debug_imap',
+		parser_credentials = OptionGroup(parser, 'Credentials')
+		parser_credentials.add_option('-U', '--user',
+			type = 'string',
+			action = 'store',
+			dest = 'username',
+			help = 'Username used on all servers.')
+		parser_credentials.add_option('-P', '--pass',
+			type = 'string',
+			action = 'store',
+			dest = 'password',
+			help = 'Password used on all servers.')
+
+
+		parser_imap = OptionGroup(parser, 'IMAP server options')
+		parser_imap.add_option('-i', '--imaps_server',
+			type = 'string',
+			action = 'store',
+			dest = 'imaps_server',
+			help = 'IMAP over SSL server.')
+		parser_imap.add_option('--imaps_port',
+			type = 'int',
+			action = 'store',
+			default = 993,
+			dest = 'imaps_port',
+			help = 'IMAP/S port. [default=%default]')
+		parser_imap.add_option('--debug_imap',
 			action = 'store_true',
 			default = False,
 			dest = 'debug_imap')
 
-		parser.add_option('--debug_smtp',
+		parser_smtp = OptionGroup(parser, 'SMTP server options')
+		parser_smtp.add_option('-f', '--from',
+			type = 'string',
+			action = 'store',
+			dest = 'mail_from',
+			help = 'Sender address')
+		parser_smtp.add_option('-t', '--to',
+			type = 'string',
+			action = 'append',
+			dest = 'rcpt_to',
+			help = 'Where to send the email echo-requests.')
+		parser_smtp.add_option('--send_interval',
+			type = 'int',
+			action = 'store',
+			default = 60,
+			dest = 'send_interval',
+			help = 'Interval between echo-requests. [default=%default]')
+		parser_smtp.add_option('-s', '--smtp_server',
+			type = 'string',
+			action = 'store',
+			dest = 'smtp_server',
+			help = 'SMTP Server (must support STARTTLS).')
+		parser_smtp.add_option('--smtp_port',
+			type = 'int',
+			action = 'store',
+			default = 587,
+			dest = 'smtp_port',
+			help = 'SMTP port. [default=%default]')
+		parser_smtp.add_option('--debug_smtp',
 			action = 'store_true',
 			default = False,
 			dest = 'debug_smtp')
 
-		parser.add_option('--debug_messages',
+		parser_debug = OptionGroup(parser, 'Other Debug Options')
+		parser_debug.add_option('--debug_messages',
 			action = 'store_true',
 			default = False,
 			dest = 'debug_messages',
 			help = 'Keeps old echo requests and replies in mailbox. [default=%default]')
 
+		parser_output = OptionGroup(parser, 'Output options')
+		parser_output.add_option('--enable_csv',
+			action = 'store_true',
+			default = False,
+			dest = 'enable_csv',
+			help = 'Enable CSV output. ')
+		parser_output.add_option('--csv_dir',
+			action = 'store',
+			default = '.',
+			dest = 'csv_dir',
+			help = 'Where to write CSV files. [default=%default]')
+		parser_output.add_option('--enable_rrd',
+			action = 'store_true',
+			default = False,
+			dest = 'enable_rrd',
+			help = 'Enable RRD output.')
+		parser_output.add_option('--rrd_dir',
+			action = 'store',
+			default = '.',
+			dest = 'rrd_dir',
+			help = 'Where to write RRD files. [default=%default]')
+		parser_output.add_option('--enable_stdout',
+			action = 'store_true',
+			default = False,
+			dest = 'enable_stdout',
+			help = 'Enable output to stdout.')
+		parser_output.add_option('--enable_nsca',
+			action = 'store_true',
+			default = False,
+			dest = 'enable_nsca',
+			help = 'Enable output to send_nsca.')
+		parser_output.add_option('--nsca_cmd',
+			action = 'store',
+			default = '/usr/sbin/send_nsca',
+			dest = 'nsca_cmd',
+			help = 'Path to send_nsca. [default=%default]')
+		parser_output.add_option('--nsca_config',
+			action = 'store',
+			default = '/etc/send_nsca.cfg',
+			dest = 'nsca_config',
+			help = 'Path to send_nsca.cfg. [default=%default]')
+		parser_output.add_option('--nsca_host',
+			action = 'store',
+			dest = 'nsca_host',
+			help = 'NSCA host address.')
+		parser_output.add_option('--nsca_port',
+			action = 'store',
+			default = 5667,
+			dest = 'nsca_port',
+			help = 'NSCA port. [default=%default]')
+
+		parser.add_option_group(parser_credentials)
+		parser.add_option_group(parser_imap)
+		parser.add_option_group(parser_smtp)
+		parser.add_option_group(parser_output)
+		parser.add_option_group(parser_debug)
+
 		(options, args) = parser.parse_args()
 
+		# do sanity checks on options passed by the user
+		error_list = []
+		# check for required arguments
 		for k in require_defined:
 			v = getattr(options, k)
 			if type(v) == type(None):
-				print('FATAL: option %s is required' % k)
-				parser.print_help()
-				sys.exit(1)
+				error_list.append('FATAL: option %s is required' % k)
+
+		if len(error_list) > 0:
+			for error in error_list:
+				print(error)
+			sys.exit(1)
 		return options
 
 	def log(self, m):
@@ -131,6 +202,18 @@ class Eping:
 			self.__log_lock.acquire()
 			print "%s(%i): %s" % (self.program, os.getpid(), m) 	
 			self.__log_lock.release()
+
+	def rfc822_tzoffset(self):
+		f = - float(time.timezone) / 3600.0
+		if f < 0:
+			signal = '-'
+			f = -f
+		else:
+			signal = '+'
+		(fractional, integer) = math.modf(f)
+		hour = int(integer)
+		minutes = int(fractional * 30.0)
+		return "%s%02i%02i" % (signal, hour, minutes)
 
 	def make_echo_request(self):
 		t0 = time.gmtime()
@@ -207,31 +290,36 @@ class Eping:
 
 		ping_time = int(msg.get('X-eping-ping-time'))
 		pong_time = t2_int - t1_int
-		pingpong = abs(ping_time) + abs(pong_time)
 
-		pingpong_rtt = pingpong - rtt
 
 		ping_hops = int(msg.get('X-eping-ping-hops'))
 
 		received_path = msg.get_all('Received')
 		pong_hops = len(received_path)
 
-		rcvd_from = msg.get('From')
+		hops = ping_hops + pong_hops
 
-		results = (
-			('From', rcvd_from),
-			('GMT Time', t0_int),
-			('Round Trip Time', rtt),
-			('Ping Time', ping_time),
-			('Pong Time', pong_time),
-			('PingPong Time', pingpong),
-			('PingPong - RTT', pingpong_rtt),
-			('Ping Hops', ping_hops),
-			('Pong Hops', pong_hops),
-			('Round Trip Hops', ping_hops + pong_hops)
+		rcvd_from = msg.get('From').strip()
+		l = rcvd_from.find('<')
+		if l >= 0:
+			r = rcvd_from.find('>')
+			rcvd_from = rcvd_from[l+1:r]
+
+		result = (
+			'RESULT',
+			{
+			'from': rcvd_from,
+			't0': t0_int,
+			'rtt': rtt,
+			'hops': hops,
+			'ping': ping_time,
+			'pong': pong_time,
+			'ping_hops': ping_hops,
+			'pong_hops': pong_hops,
+			}
 		)
 
-		print results
+		self.parent_queue.put(result)
 		
 
 	def imap_answerer(self, connection, msglist):
@@ -346,7 +434,9 @@ class Eping:
 				msgcounter += 1
 			except Exception as e:
 				self.log('%s' % e)
-				continue
+				# re-queue message and exit
+				self.smtp_queue.put(m)
+				sys.exit()
 
 		connection.quit()
 		self.log('sent %i messages. ending.' % msgcounter)
@@ -385,19 +475,47 @@ class Eping:
 		self.imap_process.daemon = True
 		self.imap_process.start()
 
+	def spawn_nsca_client(self):
+		# dont spawn children if main process is shutting down
+		if self.__shutdown:
+			return
+
+		# dont spawn more than one nsca process
+		try:
+			if self.nsca_process.is_alive():
+				return
+		except AttributeError:
+			pass
+
+		self.log('spawning nsca_process')
+		self.nsca_process = Process(target=self.nsca_client)
+		self.nsca_process.daemon = True
+		self.nsca_process.start()
+
+	def nsca_client(self):
+		self.program='eping-nsca'
+		self.log("started")
+
+		# TODO: Do something...
+
+		self.log("ended")
+
+
 	def consume_parent_queue(self):
 		if self.parent_queue.empty():
 			return
-		cmd = self.parent_queue.get()
-		if cmd == 'DIE':
+		msg = self.parent_queue.get()
+		if msg == ('DIE'):
 			self.log('DIE received')
 			self.__shutdown = True
+		if msg[0] == 'RESULT':
+			self.output_result(msg[1])
 
 	def consume_imap_queue(self):
 		if self.imap_queue.empty():
 			return
 		cmd = self.imap_queue.get()
-		if cmd == 'DIE':
+		if cmd == ('DIE'):
 			self.log('DIE received')
 			self.__shutdown = True
 
@@ -405,29 +523,95 @@ class Eping:
 		if self.smtp_queue.empty():
 			return
 		cmd = self.smtp_queue.get()
-		if cmd == 'DIE':
+		if cmd == ('DIE'):
 			self.log('DIE received')
 			self.__shutdown = True
 		else:
 			self.log(cmd)
 
+	def output_result(self, result):
+		if type(result) != types.DictType:
+			raise ValueError('result must be a dictionary')
+
+		# stdout output
+		if self.args.enable_stdout:
+			self.output_stdout(result)
+
+		# csv output
+		if self.args.enable_csv:
+			self.output_csv(result)
+
+		# rrd output
+		if self.args.enable_rrd:
+			self.output_rrd(result)
+	
+		# nsca output
+		if self.args.enable_nsca:
+			self.nsca_queue.put(result)
+
+	def output_stdout(self, result):
+
+		t0 = time.localtime(result['t0'] - time.timezone)
+		t0_str = time.strftime('%Y-%m-%d %H:%M:%S', t0) 
+		t0_str += ' ' + self.rfc822_tzoffset()
+
+		mail_from = result['from']
+		rtt = result['rtt']
+		ping = result['ping']
+		pong = result['pong']
+		hops = result['hops']
+		ping_hops = result['ping_hops']
+		pong_hops = result['pong_hops']
+		
+		s = '%s, %s: RTT:%i (PING:%i PONG:%i), HOPS:%i (PING:%i PONG:%i)' % (t0_str, mail_from, rtt, ping, pong, hops, ping_hops, pong_hops)
+		print(s)
+		
+	def output_csv(self, result):
+
+		t0 = time.localtime(result['t0'] - time.timezone)
+		t0_date = time.strftime('%Y-%m-%d', t0) 
+		t0_time = time.strftime('%H:%M:%S', t0) 
+		tz_offset = self.rfc822_tzoffset()
+	
+		mail_from = result['from']
+		rtt = result['rtt']
+		ping = result['ping']
+		pong = result['pong']
+		hops = result['hops']
+		ping_hops = result['ping_hops']
+		pong_hops = result['pong_hops']
+
+		s = '%s;%s;%s;%i;%i;%i;%i;%i;%i\n' % (t0_date, t0_time, tz_offset, rtt, ping, pong, hops, ping_hops, pong_hops)
+		filename = os.path.join(self.args.csv_dir, mail_from + '.csv')
+
+		if os.path.exists(filename):
+			f = open(filename, 'ab')
+		else:
+			f = open(filename, 'wb')
+			f.write('# eping data for: %s\n# (t0_date, t0_time, tz_offset, rtt, ping, pong, hops, ping_hops, pong_hops)\n' % mail_from)
+		f.write(s)
+		f.close()
+
+	def output_rrd(self, result):
+		pass
+
 	def kill_parent(self):
 		self.log('kill_parent()')
-		m = 'DIE'
+		m = ('DIE')
 		self.parent_queue.put(m)
 
 	def kill_imap(self):
 		self.log('kill_imap()')
-		m = 'DIE'
+		m = ('DIE')
 		self.imap_queue.put(m)
 
 	def kill_smtp(self):
 		self.log('kill_smtp()')
-		m = 'DIE'
+		m = ('DIE')
 		self.smtp_queue.put(m)
 
 	def nice_shutdown_process(self, process, queue):
-		m = 'DIE'
+		m = ('DIE')
 		queue.put(m)
 		process.join(5)
 		if process.is_alive():
@@ -454,6 +638,10 @@ class Eping:
 			# spawn smtp client when needed
 			if not self.smtp_queue.empty():
 				self.spawn_smtp_client()
+
+			# spawn nsca client when needed
+			if not self.nsca_queue.empty():
+				self.spawn_nsca_client()
 
 			# (re)spawn imap client
 			self.spawn_imap_client()
