@@ -1,8 +1,8 @@
 #! /usr/bin/env python
 
 import sys, re, os
-import argparse
 import time
+from optparse import OptionParser
 import base64
 import smtplib
 import imaplib
@@ -28,103 +28,103 @@ class Eping:
 		self.parent_queue = Queue()
 
 	def parse_commandline(self):
-		parser = argparse.ArgumentParser()
+		version_string = "%s %s" % (self.program, self.version)
+		parser = OptionParser(version=version_string)
+		require_defined = (
+			'username',
+			'password',
+			'imaps_server',
+			'smtp_server',
+			'mail_from',
+			)
 
-		parser.description = self.description
-		parser.prog = self.program
-
-		parser.add_argument('-U', '--user',
-			required = True,
-			type = str,
+		parser.add_option('-U', '--user',
+			type = 'string',
 			action = 'store',
-			dest = 'username')
+			dest = 'username',
+			help = 'Email account username.')
 
-		parser.add_argument('-P', '--pass',
-			required = True,
-			type = str,
+		parser.add_option('-P', '--pass',
+			type = 'string',
 			action = 'store',
-			dest = 'password')
+			dest = 'password',
+			help = 'Email account password.')
 
-		parser.add_argument('-i', '--imaps_server',
-			required = True,
-			type = str,
+		parser.add_option('-i', '--imaps_server',
+			type = 'string',
 			action = 'store',
-			dest = 'imaps_server')
+			dest = 'imaps_server',
+			help = 'IMAP over SSL server.')
 
-		parser.add_argument('-s', '--smtp_server',
-			required = True,
-			type = str,
+		parser.add_option('-s', '--smtp_server',
+			type = 'string',
 			action = 'store',
-			dest = 'smtp_server')
+			dest = 'smtp_server',
+			help = 'SMTP Server (must support STARTTLS).')
 
-		parser.add_argument('-f', '--from',
-			required = True,
-			type = str,
+		parser.add_option('-f', '--from',
+			type = 'string',
 			action = 'store',
-			dest = 'mail_from')
+			dest = 'mail_from',
+			help = 'Sender address')
 
-		parser.add_argument('-t', '--to',
-			required = False,
-			type = str,
+		parser.add_option('-t', '--to',
+			type = 'string',
 			action = 'append',
-			dest = 'rcpt_to')
+			dest = 'rcpt_to',
+			help = 'Where to send the email echo-requests.')
 
-		parser.add_argument('--imaps_port',
-			required = False,
-			type = int,
+		parser.add_option('--imaps_port',
+			type = 'int',
 			action = 'store',
 			default = 993,
-			dest = 'imaps_port')
+			dest = 'imaps_port',
+			help = 'IMAP/S port. [default=%default]')
 
-		parser.add_argument('--smtp_port',
-			required = False,
-			type = int,
+		parser.add_option('--smtp_port',
+			type = 'int',
 			action = 'store',
 			default = 587,
-			dest = 'smtp_port')
+			dest = 'smtp_port',
+			help = 'SMTP port. [default=%default]')
 
-		parser.add_argument('--send_interval',
-			required = False,
-			type = int,
+		parser.add_option('--send_interval',
+			type = 'int',
 			action = 'store',
 			default = 60,
-			dest = 'send_interval')
+			dest = 'send_interval',
+			help = 'Interval between echo-requests. [default=%default]')
 
-		parser.add_argument('--verbose',
-			required = False,
+		parser.add_option('--verbose',
 			action = 'store_true',
 			default = False,
 			dest = 'verbose')
 
-		parser.add_argument('--debug',
-			required = False,
-			action = 'store_true',
-			default = False,
-			dest = 'debug')
-
-		parser.add_argument('--debug_imap',
-			required = False,
+		parser.add_option('--debug_imap',
 			action = 'store_true',
 			default = False,
 			dest = 'debug_imap')
 
-		parser.add_argument('--debug_smtp',
-			required = False,
+		parser.add_option('--debug_smtp',
 			action = 'store_true',
 			default = False,
 			dest = 'debug_smtp')
 
-		parser.add_argument('--debug_messages',
-			required = False,
+		parser.add_option('--debug_messages',
 			action = 'store_true',
 			default = False,
-			dest = 'debug_messages')
+			dest = 'debug_messages',
+			help = 'Keeps old echo requests and replies in mailbox. [default=%default]')
 
-		parser.add_argument('--version',
-			action='version',
-			version='%s %s' % (self.program, self.version))
+		(options, args) = parser.parse_args()
 
-		return parser.parse_args()
+		for k in require_defined:
+			v = getattr(options, k)
+			if type(v) == type(None):
+				print('FATAL: option %s is required' % k)
+				parser.print_help()
+				sys.exit(1)
+		return options
 
 	def log(self, m):
 		if self.args.verbose:
