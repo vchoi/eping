@@ -79,6 +79,12 @@ class Eping:
 			default = 993,
 			dest = 'imaps_port',
 			help = 'IMAP/S port. [default=%default]')
+		parser_imap.add_option('--imap_connection_lifetime',
+			type = 'int',
+			action = 'store',
+			default = 3600,
+			dest = 'imap_connection_lifetime',
+			help = 'Maximum IMAP connection lifetime, in seconds. [default=%default]')
 		parser_imap.add_option('--debug_imap',
 			action = 'store_true',
 			default = False,
@@ -378,6 +384,7 @@ class Eping:
 		except KeyboardInterrupt:
 			self.__shutdown = True
 
+		death_time = time.time() + self.args.imap_connection_lifetime
 		while not self.__shutdown:
 			try:
 				connection.noop()
@@ -394,6 +401,9 @@ class Eping:
 				self.log(str(e))
 				continue
 
+			if time.time() > death_time:
+				break
+		
 		self.log("ended")
 
 	def smtp_client(self):
